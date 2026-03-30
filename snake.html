@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Snake</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    font-family: 'Courier New', monospace;
+    color: #fff;
+  }
+  h1 {
+    font-size: 2rem;
+    letter-spacing: 0.3em;
+    color: #4ade80;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+  }
+  #scoreboard {
+    display: flex;
+    gap: 40px;
+    margin-bottom: 16px;
+    font-size: 1rem;
+    color: #aaa;
+  }
+  #scoreboard span { color: #fff; font-weight: bold; }
+  canvas {
+    border: 2px solid #4ade80;
+    box-shadow: 0 0 30px rgba(74, 222, 128, 0.3);
+    border-radius: 4px;
+  }
+  #message {
+    margin-top: 16px;
+    font-size: 1rem;
+    color: #aaa;
+    height: 24px;
+    letter-spacing: 0.1em;
+  }
+  #message.active { color: #4ade80; }
+</style>
+</head>
+<body>
+<h1>Snake</h1>
+<div id="scoreboard">
+  SCORE: <span id="score">0</span> &nbsp;&nbsp; BEST: <span id="best">0</span>
+</div>
+<canvas id="c" width="400" height="400"></canvas>
+<div id="message" class="active">Press any arrow key to start</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const SIZE = 20;
+const COLS = canvas.width / SIZE;
+const ROWS = canvas.height / SIZE;
+
+let snake, dir, nextDir, food, score, best, running, loop;
+
+best = parseInt(localStorage.getItem('snakeBest') || '0');
+document.getElementById('best').textContent = best;
+
+function init() {
+  snake = [{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }];
+  dir = { x: 1, y: 0 };
+  nextDir = { x: 1, y: 0 };
+  score = 0;
+  running = false;
+  document.getElementById('score').textContent = 0;
+  document.getElementById('message').textContent = 'Press any arrow key to start';
+  document.getElementById('message').className = 'active';
+  placeFood();
+  draw();
+}
+
+function placeFood() {
+  let pos;
+  do {
+    pos = { x: Math.floor(Math.random() * COLS), y: Math.floor(Math.random() * ROWS) };
+  } while (snake.some(s => s.x === pos.x && s.y === pos.y));
+  food = pos;
+}
+
+function step() {
+  dir = nextDir;
+  const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+
+  // Wall collision
+  if (head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS) {
+    return gameOver();
+  }
+  // Self collision
+  if (snake.some(s => s.x === head.x && s.y === head.y)) {
+    return gameOver();
+  }
+
+  snake.unshift(head);
+
+  if (head.x === food.x && head.y === food.y) {
+    score++;
+    document.getElementById('score').textContent = score;
+    if (score > best) {
+      best = score;
+      localStorage.setItem('snakeBest', best);
+      document.getElementById('best').textContent = best;
+    }
+    placeFood();
+  } else {
+    snake.pop();
+  }
+
+  draw();
+}
+
+function draw() {
+  // Background
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Grid (subtle)
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+  ctx.lineWidth = 0.5;
+  for (let x = 0; x <= COLS; x++) {
+    ctx.beginPath(); ctx.moveTo(x * SIZE, 0); ctx.lineTo(x * SIZE, canvas.height); ctx.stroke();
+  }
+  for (let y = 0; y <= ROWS; y++) {
+    ctx.beginPath(); ctx.moveTo(0, y * SIZE); ctx.lineTo(canvas.width, y * SIZE); ctx.stroke();
+  }
+
+  // Food (pulsing red dot)
+  const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 200);
+  ctx.fillStyle = `rgba(248, 113, 113, ${pulse})`;
+  ctx.shadowBlur = 10;
+  ctx.shadowColor = '#f87171';
+  ctx.beginPath();
+  ctx.arc(food.x * SIZE + SIZE / 2, food.y * SIZE + SIZE / 2, SIZE / 2 - 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Snake
+  snake.forEach((seg, i) => {
+    const ratio = 1 - (i / snake.length) * 0.6;
+    ctx.fillStyle = i === 0
+      ? '#4ade80'
+      : `rgba(74, 222, 128, ${ratio})`;
+    ctx.shadowBlur = i === 0 ? 8 : 0;
+    ctx.shadowColor = '#4ade80';
+    ctx.fillRect(seg.x * SIZE + 1, seg.y * SIZE + 1, SIZE - 2, SIZE - 2);
+  });
+  ctx.shadowBlur = 0;
+
+  // Eyes on head
+  const h = snake[0];
+  ctx.fillStyle = '#0a0a0a';
+  const ex = dir.x === 0 ? [5, 13] : dir.x > 0 ? [13, 13] : [5, 5];
+  const ey = dir.y === 0 ? [5, 13] : dir.y > 0 ? [13, 13] : [5, 5];
+  ctx.beginPath(); ctx.arc(h.x * SIZE + ex[0], h.y * SIZE + ey[0], 2, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(h.x * SIZE + ex[1], h.y * SIZE + ey[1], 2, 0, Math.PI * 2); ctx.fill();
+}
+
+function gameOver() {
+  running = false;
+  clearInterval(loop);
+  document.getElementById('message').textContent = `Game over! Score: ${score} — Press arrow key to play again`;
+  document.getElementById('message').className = 'active';
+
+  // Flash red
+  ctx.fillStyle = 'rgba(248, 113, 113, 0.15)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function startGame() {
+  clearInterval(loop);
+  init();
+  running = true;
+  document.getElementById('message').textContent = '';
+  const speed = Math.max(60, 120 - score * 2);
+  loop = setInterval(() => {
+    step();
+    if (running) {
+      clearInterval(loop);
+      const newSpeed = Math.max(60, 120 - score * 2);
+      loop = setInterval(gameLoop, newSpeed);
+    }
+  }, 120);
+}
+
+function gameLoop() { step(); }
+
+document.addEventListener('keydown', e => {
+  const keys = {
+    ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 },
+    ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }
+  };
+  if (!keys[e.key]) return;
+  e.preventDefault();
+  const nd = keys[e.key];
+  // Prevent reversing
+  if (nd.x === -dir.x && nd.y === -dir.y) return;
+  nextDir = nd;
+  if (!running) { startGame(); }
+});
+
+// Touch support
+let touchStart = null;
+canvas.addEventListener('touchstart', e => { touchStart = e.touches[0]; e.preventDefault(); }, { passive: false });
+canvas.addEventListener('touchend', e => {
+  if (!touchStart) return;
+  const dx = e.changedTouches[0].clientX - touchStart.clientX;
+  const dy = e.changedTouches[0].clientY - touchStart.clientY;
+  if (Math.abs(dx) > Math.abs(dy)) {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: dx > 0 ? 'ArrowRight' : 'ArrowLeft' }));
+  } else {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: dy > 0 ? 'ArrowDown' : 'ArrowUp' }));
+  }
+  e.preventDefault();
+}, { passive: false });
+
+init();
+</script>
+</body>
+</html>
