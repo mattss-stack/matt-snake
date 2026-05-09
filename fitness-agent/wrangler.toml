@@ -1,0 +1,14 @@
+name = "matt-fitness-agent"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Cron fires at 12:00 UTC = 7 AM EST / 8 AM EDT
+# Adjust this if you're in a different timezone
+[triggers]
+crons = ["0 12 * * *"]
+
+[[kv_namespaces]]
+binding = "FITNESS_KV"
+id = "REPLACE_WITH_KV_ID"
+preview_id = "REPLACE_WITH_PREVIEW_KV_ID"

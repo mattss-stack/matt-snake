@@ -1,0 +1,19 @@
+{
+  "name": "matt-fitness-agent",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "kv:create": "wrangler kv namespace create FITNESS_KV && wrangler kv namespace create --preview FITNESS_KV"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "@types/node": "^25.6.2",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.0.0"
+  }
+}
