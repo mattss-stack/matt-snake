@@ -1,209 +1,190 @@
 import { sendMessage, sendTyping, setWebhook } from './telegram';
 import { getWeather } from './weather';
-import { getTodayWorkout } from './fitness';
-import { generateMorningBriefing, handleConversation, extractProfile } from './claude';
-import type { UserProfile, ConversationMessage, TelegramUpdate } from './types';
+import { buildSnapshot, formatTelegramBriefing } from './fitness';
+import { generateWorkoutPlan, parseIncomingMessage } from './claude';
+import { getRecentSessions, createWorkoutPage, updateWorkoutPage, notionPageUrl } from './notion';
+import type { Env, FitnessSnapshot, ConversationMessage, TelegramUpdate } from './types';
 
-export interface Env {
-  FITNESS_KV: KVNamespace;
-  TELEGRAM_BOT_TOKEN: string;
-  ANTHROPIC_API_KEY: string;
-  TELEGRAM_WEBHOOK_SECRET: string;
+const LOCATION = 'San Diego, CA';
+const KV_SNAPSHOT = 'snapshot';
+const KV_CONV = 'conv';
+
+async function getSnapshot(env: Env): Promise<FitnessSnapshot | null> {
+  const raw = await env.FITNESS_KV.get(KV_SNAPSHOT);
+  return raw ? (JSON.parse(raw) as FitnessSnapshot) : null;
 }
 
-const KV_USERS_KEY = 'users';
-const kvUserKey = (chatId: number) => `user:${chatId}`;
-const kvConvKey = (chatId: number) => `conv:${chatId}`;
-
-async function getProfile(env: Env, chatId: number): Promise<UserProfile | null> {
-  const raw = await env.FITNESS_KV.get(kvUserKey(chatId));
-  return raw ? JSON.parse(raw) : null;
+async function saveSnapshot(env: Env, snapshot: FitnessSnapshot): Promise<void> {
+  await env.FITNESS_KV.put(KV_SNAPSHOT, JSON.stringify(snapshot));
 }
 
-async function saveProfile(env: Env, profile: UserProfile): Promise<void> {
-  await env.FITNESS_KV.put(kvUserKey(profile.chatId), JSON.stringify(profile));
-
-  const usersRaw = await env.FITNESS_KV.get(KV_USERS_KEY);
-  const users: number[] = usersRaw ? JSON.parse(usersRaw) : [];
-  if (!users.includes(profile.chatId)) {
-    users.push(profile.chatId);
-    await env.FITNESS_KV.put(KV_USERS_KEY, JSON.stringify(users));
-  }
+async function getHistory(env: Env): Promise<ConversationMessage[]> {
+  const raw = await env.FITNESS_KV.get(KV_CONV);
+  return raw ? (JSON.parse(raw) as ConversationMessage[]) : [];
 }
 
-async function getConversationHistory(env: Env, chatId: number): Promise<ConversationMessage[]> {
-  const raw = await env.FITNESS_KV.get(kvConvKey(chatId));
-  return raw ? JSON.parse(raw) : [];
-}
-
-async function appendConversation(
+async function appendHistory(
   env: Env,
-  chatId: number,
-  userMessage: string,
-  assistantMessage: string,
+  userMsg: string,
+  assistantMsg: string,
 ): Promise<void> {
-  const history = await getConversationHistory(env, chatId);
-  history.push({ role: 'user', content: userMessage });
-  history.push({ role: 'assistant', content: assistantMessage });
-  const trimmed = history.slice(-20);
-  await env.FITNESS_KV.put(kvConvKey(chatId), JSON.stringify(trimmed));
+  const history = await getHistory(env);
+  history.push({ role: 'user', content: userMsg });
+  history.push({ role: 'assistant', content: assistantMsg });
+  // Keep last 20 messages (10 exchanges), summarised naturally by Claude in context
+  await env.FITNESS_KV.put(KV_CONV, JSON.stringify(history.slice(-20)));
 }
 
-async function sendBriefingToUser(env: Env, chatId: number): Promise<void> {
-  const profile = await getProfile(env, chatId);
-  if (!profile || !profile.setupComplete) return;
+async function sendDailyBriefing(env: Env): Promise<void> {
+  const snapshot = await getSnapshot(env);
+  if (!snapshot?.chatId) return; // no registered user yet
 
-  const [weather, workout] = await Promise.all([
-    getWeather(profile.location),
-    Promise.resolve(getTodayWorkout()),
+  const [sessions, weather] = await Promise.all([
+    getRecentSessions(env.NOTION_API_KEY, env.NOTION_DATABASE_ID, 14),
+    getWeather(LOCATION),
   ]);
 
-  const briefing = await generateMorningBriefing(profile, weather, workout, env.ANTHROPIC_API_KEY);
-  await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, briefing);
+  const freshSnapshot: FitnessSnapshot = {
+    ...snapshot,
+    ...buildSnapshot(sessions, snapshot),
+    chatId: snapshot.chatId,
+  };
 
-  profile.lastBriefingSent = new Date().toISOString();
-  await saveProfile(env, profile);
+  const plan = await generateWorkoutPlan(freshSnapshot, weather, env.ANTHROPIC_API_KEY);
+
+  const todayISO = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' }); // YYYY-MM-DD
+
+  let pageId: string | undefined;
+  if (!plan.isRestDay && plan.blocks.length > 0) {
+    try {
+      pageId = await createWorkoutPage(
+        env.NOTION_API_KEY,
+        env.NOTION_DATABASE_ID,
+        plan.sessionTitle,
+        todayISO,
+        plan.split,
+        plan.gym,
+        plan.blocks,
+        plan.extras,
+      );
+    } catch {
+      // Notion write failed — briefing still sends without link
+    }
+  }
+
+  freshSnapshot.todayPageId = pageId;
+  freshSnapshot.todayDate = todayISO;
+  await saveSnapshot(env, freshSnapshot);
+
+  const notionUrl = pageId ? notionPageUrl(pageId) : 'https://notion.so';
+  const message = formatTelegramBriefing(plan, weather, notionUrl);
+  await sendMessage(env.TELEGRAM_BOT_TOKEN, snapshot.chatId, message);
 }
 
-async function handleCommand(
-  env: Env,
-  chatId: number,
-  command: string,
-  fromName: string,
-): Promise<void> {
+async function handleCommand(env: Env, chatId: number, command: string): Promise<void> {
   const token = env.TELEGRAM_BOT_TOKEN;
 
   if (command === '/start') {
-    const existing = await getProfile(env, chatId);
-    if (existing?.setupComplete) {
+    const snapshot = await getSnapshot(env);
+    if (snapshot?.chatId) {
       await sendMessage(token, chatId,
-        `Welcome back, *${existing.name}*! Type anything to chat, or use:\n\n` +
-        `/briefing — get today's workout briefing\n` +
-        `/profile — view your current profile\n` +
-        `/help — show all commands`
+        `Already registered. Commands:\n/briefing — generate today's plan now\n/help — show commands`,
       );
     } else {
+      const existing = snapshot ?? {} as Partial<FitnessSnapshot>;
+      const newSnapshot: FitnessSnapshot = {
+        chatId,
+        lastUpdated: new Date().toISOString(),
+        lastSessions: existing.lastSessions ?? {},
+        kneeTrend: existing.kneeTrend ?? [],
+        weekSessions: existing.weekSessions ?? [],
+      };
+      await saveSnapshot(env, newSnapshot);
       await sendMessage(token, chatId,
-        `Hey! I'm your personal fitness coach. Let's get you set up.\n\n` +
-        `Tell me about yourself in one message:\n` +
-        `• Your *name*\n` +
-        `• Your *city* (for weather)\n` +
-        `• Your *fitness goal* (e.g., build muscle, lose weight, improve endurance)\n` +
-        `• Your *fitness level* (beginner / intermediate / advanced)\n` +
-        `• Your *equipment* (e.g., full gym, home dumbbells, bodyweight only)\n\n` +
-        `I'll generate your profile and send your first briefing right away.`
+        `Registered. You'll get a briefing every morning at 5 AM PT.\n\nType /briefing to get today's plan now, or just ask me anything about your training.`,
       );
     }
     return;
   }
 
   if (command === '/briefing') {
-    const profile = await getProfile(env, chatId);
-    if (!profile?.setupComplete) {
-      await sendMessage(token, chatId, 'Run /start first to set up your profile.');
-      return;
-    }
     await sendTyping(token, chatId);
-    await sendBriefingToUser(env, chatId);
-    return;
-  }
-
-  if (command === '/profile') {
-    const profile = await getProfile(env, chatId);
-    if (!profile?.setupComplete) {
-      await sendMessage(token, chatId, 'No profile found. Run /start to get set up.');
-      return;
-    }
-    await sendMessage(token, chatId,
-      `*Your Profile*\n\n` +
-      `*Name:* ${profile.name}\n` +
-      `*Location:* ${profile.location}\n` +
-      `*Goal:* ${profile.fitnessGoal}\n` +
-      `*Level:* ${profile.fitnessLevel}\n` +
-      `*Equipment:* ${profile.equipmentAccess}\n\n` +
-      `_To update anything, just tell me what to change._`
-    );
+    await sendDailyBriefing(env);
     return;
   }
 
   if (command === '/help') {
     await sendMessage(token, chatId,
-      `*Commands*\n\n` +
-      `/start — set up your profile\n` +
-      `/briefing — get today's workout briefing now\n` +
-      `/profile — view your profile\n` +
-      `/help — show this menu\n\n` +
-      `_You can also just message me — ask about exercises, form tips, nutrition, or anything fitness-related._`
+      `*Commands*\n/briefing — generate today's workout now\n/start — register for daily briefings\n/help — this menu\n\n_Or just message me — log a session, ask about form, ask what to eat, anything._`,
     );
     return;
   }
 }
 
-async function handleMessage(env: Env, update: TelegramUpdate): Promise<void> {
-  const message = update.message;
-  if (!message?.text) return;
+async function handleIncoming(env: Env, update: TelegramUpdate): Promise<void> {
+  const msg = update.message;
+  if (!msg?.text) return;
 
-  const chatId = message.chat.id;
-  const text = message.text.trim();
+  const chatId = msg.chat.id;
+  const text = msg.text.trim();
   const token = env.TELEGRAM_BOT_TOKEN;
 
   if (text.startsWith('/')) {
-    const command = text.split(' ')[0].toLowerCase();
-    await handleCommand(env, chatId, command, message.from.first_name);
+    await handleCommand(env, chatId, text.split(' ')[0].toLowerCase());
     return;
   }
 
-  const profile = await getProfile(env, chatId);
-
-  if (!profile || !profile.setupComplete) {
-    await sendTyping(token, chatId);
-
-    const extracted = await extractProfile(text, env.ANTHROPIC_API_KEY);
-    const hasEnough = extracted.name && extracted.location && extracted.fitnessGoal && extracted.fitnessLevel;
-
-    if (!hasEnough) {
-      await sendMessage(token, chatId,
-        `I need a bit more info to set you up. Please include your *name*, *city*, *fitness goal*, *fitness level*, and *equipment access* in one message.`
-      );
-      return;
-    }
-
-    const newProfile: UserProfile = {
-      chatId,
-      name: extracted.name!,
-      location: extracted.location!,
-      fitnessGoal: extracted.fitnessGoal!,
-      fitnessLevel: extracted.fitnessLevel!,
-      equipmentAccess: extracted.equipmentAccess ?? 'not specified',
-      setupComplete: true,
-      registeredAt: new Date().toISOString(),
-    };
-
-    await saveProfile(env, newProfile);
-    await sendMessage(token, chatId,
-      `Got it, *${newProfile.name}*! Profile saved.\n\n` +
-      `*Goal:* ${newProfile.fitnessGoal}\n` +
-      `*Level:* ${newProfile.fitnessLevel}\n` +
-      `*Location:* ${newProfile.location}\n` +
-      `*Equipment:* ${newProfile.equipmentAccess}\n\n` +
-      `Generating your first briefing now...`
-    );
-
-    await sendBriefingToUser(env, chatId);
+  const snapshot = await getSnapshot(env);
+  if (!snapshot?.chatId) {
+    await sendMessage(token, chatId, 'Run /start first to register.');
     return;
   }
 
   await sendTyping(token, chatId);
 
-  const [weather, workout, history] = await Promise.all([
-    getWeather(profile.location),
-    Promise.resolve(getTodayWorkout()),
-    getConversationHistory(env, chatId),
+  const [sessions, weather, history] = await Promise.all([
+    // Only re-fetch Notion if snapshot is stale (>6 hours old)
+    isSnapshotStale(snapshot)
+      ? getRecentSessions(env.NOTION_API_KEY, env.NOTION_DATABASE_ID, 14)
+      : Promise.resolve(null),
+    getWeather(LOCATION),
+    getHistory(env),
   ]);
 
-  const reply = await handleConversation(profile, weather, workout, history, text, env.ANTHROPIC_API_KEY);
-  await sendMessage(token, chatId, reply);
-  await appendConversation(env, chatId, text, reply);
+  let activeSnapshot = snapshot;
+  if (sessions) {
+    activeSnapshot = { ...snapshot, ...buildSnapshot(sessions, snapshot), chatId: snapshot.chatId };
+    await saveSnapshot(env, activeSnapshot);
+  }
+
+  const parsed = await parseIncomingMessage(activeSnapshot, weather, history, text, env.ANTHROPIC_API_KEY);
+
+  if (parsed.isLog && parsed.logData) {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+    if (snapshot.todayPageId && snapshot.todayDate === today) {
+      try {
+        await updateWorkoutPage(env.NOTION_API_KEY, snapshot.todayPageId, parsed.logData);
+      } catch {
+        // Update failed silently — user still gets confirmation reply
+      }
+    }
+    // Refresh snapshot from Notion after log so next message has updated data
+    try {
+      const refreshed = await getRecentSessions(env.NOTION_API_KEY, env.NOTION_DATABASE_ID, 14);
+      const updated = { ...activeSnapshot, ...buildSnapshot(refreshed, activeSnapshot), chatId: activeSnapshot.chatId };
+      await saveSnapshot(env, updated);
+    } catch {
+      // Non-critical
+    }
+  }
+
+  await sendMessage(token, chatId, parsed.reply);
+  await appendHistory(env, text, parsed.reply);
+}
+
+function isSnapshotStale(snapshot: FitnessSnapshot): boolean {
+  const sixHours = 6 * 60 * 60 * 1000;
+  return Date.now() - new Date(snapshot.lastUpdated).getTime() > sixHours;
 }
 
 export default {
@@ -215,28 +196,25 @@ export default {
       if (secret !== env.TELEGRAM_WEBHOOK_SECRET) {
         return new Response('Unauthorized', { status: 401 });
       }
-
       const update = (await request.json()) as TelegramUpdate;
-      await handleMessage(env, update);
+      await handleIncoming(env, update);
       return new Response('OK');
     }
 
+    // One-time webhook registration: visit this URL after deploying
     if (request.method === 'GET' && url.pathname === '/setup-webhook') {
-      const workerUrl = `https://${url.host}/webhook`;
-      const result = await setWebhook(env.TELEGRAM_BOT_TOKEN, workerUrl, env.TELEGRAM_WEBHOOK_SECRET);
-      return new Response(JSON.stringify(result), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      const result = await setWebhook(
+        env.TELEGRAM_BOT_TOKEN,
+        `https://${url.host}/webhook`,
+        env.TELEGRAM_WEBHOOK_SECRET,
+      );
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
     }
 
-    return new Response('Matt Fitness Agent — running');
+    return new Response('Matt Fitness Agent');
   },
 
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
-    const usersRaw = await env.FITNESS_KV.get(KV_USERS_KEY);
-    if (!usersRaw) return;
-
-    const chatIds: number[] = JSON.parse(usersRaw);
-    await Promise.all(chatIds.map((chatId) => sendBriefingToUser(env, chatId)));
+    await sendDailyBriefing(env);
   },
 };

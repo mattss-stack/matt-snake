@@ -1,13 +1,68 @@
-export interface UserProfile {
-  chatId: number;
-  name: string;
-  location: string;
-  fitnessGoal: string;
-  fitnessLevel: 'beginner' | 'intermediate' | 'advanced';
-  equipmentAccess: string;
-  setupComplete: boolean;
-  registeredAt: string;
-  lastBriefingSent?: string;
+export interface Env {
+  FITNESS_KV: KVNamespace;
+  TELEGRAM_BOT_TOKEN: string;
+  ANTHROPIC_API_KEY: string;
+  TELEGRAM_WEBHOOK_SECRET: string;
+  NOTION_API_KEY: string;
+  NOTION_DATABASE_ID: string;
+}
+
+export interface FitnessSnapshot {
+  chatId?: number;
+  lastUpdated: string;
+  todayPageId?: string;
+  todayDate?: string;
+  lastSessions: Record<string, SessionSummary>;
+  kneeTrend: string[];   // last 5 knee feel readings: "2026-05-07 Pain-free"
+  weekSessions: string[]; // splits completed since Monday
+}
+
+export interface SessionSummary {
+  date: string;
+  gym: string;
+  duration?: number;
+  notes: string;
+  kneeFeel: string;
+  isPR: boolean;
+}
+
+export interface NotionSession {
+  id: string;
+  url: string;
+  date: string;
+  split: string;
+  gym: string;
+  duration?: number;
+  kneeFeel: string;
+  notes: string;
+  session: string;
+  isPR: boolean;
+}
+
+export interface WorkoutBlock {
+  label: string;       // "B1"
+  exercise: string;    // "Cable Row"
+  prescription: string; // "145 × 8 / 130 × 10 / 115 × 12"
+}
+
+export interface WorkoutPlan {
+  split: string;
+  gym: 'Chuze' | 'Apt' | 'Peloton' | 'Outdoor';
+  gymReason: string;
+  sessionTitle: string;
+  blocks: WorkoutBlock[];
+  extras: string[];
+  motivationalLine: string;
+  isRestDay: boolean;
+  legDayViolations: string | null;
+}
+
+export interface WeatherData {
+  temp: string;
+  feelsLike: string;
+  description: string;
+  windSpeed: string;
+  goodForOutdoor: boolean;
 }
 
 export interface ConversationMessage {
@@ -15,30 +70,24 @@ export interface ConversationMessage {
   content: string;
 }
 
-export interface WeatherData {
-  temp: string;
-  feelsLike: string;
-  description: string;
-  humidity: string;
-  windSpeed: string;
-}
-
-export interface WorkoutDay {
-  day: string;
-  type: string;
-  focus: string;
-  isRestDay: boolean;
-}
-
 export interface TelegramUpdate {
   update_id: number;
-  message?: TelegramMessage;
+  message?: {
+    message_id: number;
+    from: { id: number; first_name: string; username?: string };
+    chat: { id: number };
+    text?: string;
+    date: number;
+  };
 }
 
-export interface TelegramMessage {
-  message_id: number;
-  from: { id: number; first_name: string; username?: string };
-  chat: { id: number };
-  text?: string;
-  date: number;
+export interface ParsedMessage {
+  isLog: boolean;
+  logData?: {
+    duration?: number;
+    kneeFeel?: string;
+    notes?: string;
+    isPR?: boolean;
+  };
+  reply: string;
 }

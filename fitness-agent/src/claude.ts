@@ -1,109 +1,154 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { UserProfile, WeatherData, WorkoutDay, ConversationMessage } from './types';
+import type { FitnessSnapshot, WorkoutPlan, WeatherData, ConversationMessage, ParsedMessage } from './types';
+import { formatSnapshotForClaude } from './fitness';
 
-function buildSystemPrompt(profile: UserProfile, weather: WeatherData, workout: WorkoutDay): string {
-  return `You are a personal fitness coach for ${profile.name}. You are knowledgeable, motivating, and direct — you get to the point.
+const SYSTEM_BASE = `You are Matt's personal fitness coach. This is a private bot — Matt is the only user.
 
-User Profile:
-- Name: ${profile.name}
-- Location: ${profile.location}
-- Fitness Goal: ${profile.fitnessGoal}
-- Fitness Level: ${profile.fitnessLevel}
-- Equipment: ${profile.equipmentAccess}
+## 2026 Goals
+- Bench 225 / Squat 225 (year-end)
+- Cycling avg zone ≤2.4 (April–November, ~1x/week)
+- Weekly target: 4 gym (Chest/Back/Legs/Shoulders) + 2 cardio + 1 core + 1 yoga
 
-Today's Weather in ${profile.location}:
-- Conditions: ${weather.description}
-- Temperature: ${weather.temp} (feels like ${weather.feelsLike})
-- Humidity: ${weather.humidity}, Wind: ${weather.windSpeed}
+## Gym Options
+- **Chuze**: Full gym — cables, squat rack, leg press, hack squat, sauna. 10-15 min drive. Default for all main strength sessions.
+- **Apt**: Apartment gym — dumbbells + basic cable. No commute. Use for light shoulders, core, or if time-crunched.
+- **Peloton**: Home bike. Low-impact cardio. Use for cardio days, knee-sensitive days, or bad weather.
+- **Outdoor**: Zone 2 cycling. Use when 58–84°F, wind <15 mph, no rain, knee is cleared (Pain-free trend).
 
-Today's Scheduled Workout: ${workout.type}
-Focus: ${workout.focus}
+## Hard Injury Rules — Right Knee Patellar Tendinitis (onset 3/24/26)
+1. ONE heavy squat pattern per leg session — hack OR smith OR leg press, never 2+
+2. Max 7 blocks total per session
+3. No PR attempt if 2+ squat patterns are planned
+4. Every leg day opens with prep/stability: quad sets, banded walks, glute med activation
+5. No hack squat PR same week as a long ride (30+ miles)
+6. Separate high-knee-load activities by 3–4 days
+7. Knee rehab block + stretches mandatory at end of every session
+8. Patellar strap only for hack squat and heavy leg press — not flat cycling
 
-Format all responses using Telegram Markdown: *bold* for headings and exercise names, _italic_ for emphasis. Never use # headers. Keep responses conversational and concise — no walls of text.`;
+## Current PRs (April 2026 — update when Matt logs new ones)
+Cable Row: 145×8 | Lat Pulldown: 130×6 | One Arm DB Row: 45×10
+Back Extension: 220×10
+Converging Chest Press: 90×8 | DB Flat Press: 60/side×8 | DB Incline: 50/side×8
+Close Grip Fixed Bar: 70×10×3 | Overhead Cable Tri: 70×10×3
+Arnold Press: 35×12 | Seated DB OH Press: 30×10×3
+Rear Delt Fly: 130×10×3 | Hammer Curl: 30×10
+Leg Press (knee-safe working): 190×10
+
+## Workout Format Rules
+- Always B1–B7, max 7 blocks
+- Format: "B1 — Exercise Name — weight × reps / weight × reps × sets"
+- Target: +2.5–5 lbs OR +1–2 reps vs last logged session for that split
+- Be specific — never "moderate weight" or "challenging load"
+- If Apt gym is chosen, only use exercises possible with DBs and basic cable
+
+## Motivational Line Rules
+- Exactly one line. Data-driven only. Never generic.
+- ✓ "4 straight cable row PRs if you hit 147.5 today"
+- ✓ "Last gym session to close out a 4x week — make it count"
+- ✓ "Knee pain-free 5 straight — green light"
+- ✓ "Bench at 90/8 — 225 goal is ~12 sessions away"
+- ✗ "You've got this!" "Crush it!" "Beast mode!" "Let's go!"`;
+
+function buildSystemPrompt(snapshot: FitnessSnapshot, weather: WeatherData): string {
+  return `${SYSTEM_BASE}
+
+## Matt's Current Training State
+${formatSnapshotForClaude(snapshot)}
+
+## Today's Weather (San Diego)
+${weather.temp} (feels like ${weather.feelsLike}), ${weather.description}, wind ${weather.windSpeed}
+Suitable for outdoor cycling: ${weather.goodForOutdoor ? 'yes' : 'no'}`;
 }
 
-function buildSetupSystemPrompt(): string {
-  return `Extract fitness profile information from the user's message. Return ONLY a valid JSON object with exactly these fields (use null for any that are missing or unclear):
-{
-  "name": string | null,
-  "location": string | null,
-  "fitnessGoal": string | null,
-  "fitnessLevel": "beginner" | "intermediate" | "advanced" | null,
-  "equipmentAccess": string | null
-}
-Return only the JSON, no other text.`;
-}
-
-export async function generateMorningBriefing(
-  profile: UserProfile,
+export async function generateWorkoutPlan(
+  snapshot: FitnessSnapshot,
   weather: WeatherData,
-  workout: WorkoutDay,
   apiKey: string,
-): Promise<string> {
+): Promise<WorkoutPlan> {
   const client = new Anthropic({ apiKey });
 
-  const userContent = workout.isRestDay
-    ? `Generate a morning recovery day briefing. Include: a brief weather mention, what to do for active recovery today (specific activities/stretches), one tip for recovery/sleep/nutrition, and a short motivational line. Keep it under 250 words.`
-    : `Generate a morning workout briefing for today's ${workout.type} session. Include:
-1. Brief weather note with any relevant advice (e.g., "great day to warm up outside" or "drink extra water in the heat")
-2. Today's workout with 4-6 specific exercises, sets, reps, and rest times — appropriate for a ${profile.fitnessLevel} training toward ${profile.fitnessGoal}
-3. One key form tip or focus cue for today
-4. A short energizing closer (1 sentence)
-
-Keep it under 350 words. Be specific with the exercises — no generic "do some squats", give the full prescription.`;
-
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
-    system: buildSystemPrompt(profile, weather, workout),
-    messages: [{ role: 'user', content: userContent }],
+  const today = new Date().toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'America/Los_Angeles',
   });
 
-  return response.content[0].type === 'text' ? response.content[0].text : 'Unable to generate briefing.';
+  const schema = `{
+  "split": "Chest|Back|Legs|Shoulders|Cycling|Rest/Recovery",
+  "gym": "Chuze|Apt|Peloton|Outdoor",
+  "gymReason": "one short sentence — specific reason",
+  "sessionTitle": "Back + Bis — Chuze",
+  "blocks": [{"label":"B1","exercise":"Cable Row","prescription":"145 × 8 / 130 × 10 / 115 × 12"}],
+  "extras": ["Knee rehab block (2 rounds)", "Stretches: lats, biceps"],
+  "motivationalLine": "data-driven line only — no generic phrases",
+  "isRestDay": false,
+  "legDayViolations": null
+}`;
+
+  const res = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1500,
+    system: buildSystemPrompt(snapshot, weather),
+    messages: [{
+      role: 'user',
+      content: `Today is ${today}. Based on Matt's recent training history and weekly targets, decide the best split and gym for today. Generate the workout plan as valid JSON only — no markdown, no explanation, just the JSON object matching this schema:\n${schema}\n\nFor leg days, set legDayViolations to a string describing any rule violations or null if clean. Return only valid JSON.`,
+    }],
+  });
+
+  const text = res.content[0].type === 'text' ? res.content[0].text.trim() : '{}';
+
+  try {
+    const cleaned = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    return JSON.parse(cleaned) as WorkoutPlan;
+  } catch {
+    return {
+      split: 'Other',
+      gym: 'Chuze',
+      gymReason: 'Check your schedule and choose.',
+      sessionTitle: 'Training Session',
+      blocks: [],
+      extras: ['Knee rehab block', 'Stretches'],
+      motivationalLine: 'Show up.',
+      isRestDay: false,
+      legDayViolations: null,
+    };
+  }
 }
 
-export async function handleConversation(
-  profile: UserProfile,
+export async function parseIncomingMessage(
+  snapshot: FitnessSnapshot,
   weather: WeatherData,
-  workout: WorkoutDay,
   history: ConversationMessage[],
   userMessage: string,
   apiKey: string,
-): Promise<string> {
+): Promise<ParsedMessage> {
   const client = new Anthropic({ apiKey });
 
-  const trimmedHistory = history.slice(-8);
+  const schema = `If it's a workout log (has exercise data, "done", "finished", duration, or knee status), return:
+{"isLog":true,"logData":{"duration":70,"kneeFeel":"Pain-free","notes":"cable row 150×8 PR, felt strong","isPR":true},"reply":"Logged ✓ Cable row 150×8 — new PR. Notion updated."}
 
-  const response = await client.messages.create({
+Otherwise return:
+{"isLog":false,"reply":"your response here"}
+
+Use Telegram Markdown in reply (*bold*, _italic_). Be concise. Return valid JSON only.`;
+
+  const res = await client.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
-    system: buildSystemPrompt(profile, weather, workout),
+    max_tokens: 600,
+    system: `${buildSystemPrompt(snapshot, weather)}\n\n${schema}`,
     messages: [
-      ...trimmedHistory,
+      ...history.slice(-6),
       { role: 'user', content: userMessage },
     ],
   });
 
-  return response.content[0].type === 'text' ? response.content[0].text : "I couldn't process that. Try again?";
-}
-
-export async function extractProfile(
-  userMessage: string,
-  apiKey: string,
-): Promise<Partial<Pick<UserProfile, 'name' | 'location' | 'fitnessGoal' | 'fitnessLevel' | 'equipmentAccess'>>> {
-  const client = new Anthropic({ apiKey });
-
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 300,
-    system: buildSetupSystemPrompt(),
-    messages: [{ role: 'user', content: userMessage }],
-  });
+  const text = res.content[0].type === 'text' ? res.content[0].text.trim() : '{}';
 
   try {
-    const text = response.content[0].type === 'text' ? response.content[0].text.trim() : '{}';
-    return JSON.parse(text);
+    const cleaned = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    return JSON.parse(cleaned) as ParsedMessage;
   } catch {
-    return {};
+    return { isLog: false, reply: text };
   }
 }

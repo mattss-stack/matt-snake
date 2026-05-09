@@ -3,8 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Cron fires at 12:00 UTC = 7 AM EST / 8 AM EDT
-# Adjust this if you're in a different timezone
+# 5 AM PDT (UTC-7, Mar–Nov). In winter PST (UTC-8) this fires at 4 AM — bump to 0 13 * * * if preferred.
 [triggers]
 crons = ["0 12 * * *"]
 
@@ -12,3 +11,12 @@ crons = ["0 12 * * *"]
 binding = "FITNESS_KV"
 id = "REPLACE_WITH_KV_ID"
 preview_id = "REPLACE_WITH_PREVIEW_KV_ID"
+
+[vars]
+NOTION_DATABASE_ID = "6213bc82-ebe6-47d5-ba18-a8a45881ee07"
+
+# Secrets — set with: wrangler secret put <NAME>
+# TELEGRAM_BOT_TOKEN
+# TELEGRAM_WEBHOOK_SECRET
+# ANTHROPIC_API_KEY
+# NOTION_API_KEY
