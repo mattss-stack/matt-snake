@@ -94,5 +94,6 @@ export interface ParsedMessage {
     notes?: string;
     isPR?: boolean;
   };
+  newPreference?: string; // standing rule to save permanently, e.g. "Never start with chest-supported row"
   reply: string;
 }

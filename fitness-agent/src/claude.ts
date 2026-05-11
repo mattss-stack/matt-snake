@@ -96,8 +96,12 @@ Data-driven, never generic:
 - ✓ "Bench at 90×8 — 225 goal is ~10 sessions away at this pace"
 - ✗ "You've got this!" "Crush it!" "Beast mode!" "Stay consistent!"`;
 
-function buildSystemPrompt(snapshot: FitnessSnapshot, weather: WeatherData): string {
-  return `${SYSTEM_BASE}
+function buildSystemPrompt(snapshot: FitnessSnapshot, weather: WeatherData, preferences: string[] = []): string {
+  const prefsSection = preferences.length > 0
+    ? `\n## Standing Preferences (permanent rules Matt has set — always apply these)\n${preferences.map((p, i) => `${i + 1}. ${p}`).join('\n')}\n`
+    : '';
+
+  return `${SYSTEM_BASE}${prefsSection}
 
 ## Matt's Current Training State
 ${formatSnapshotForClaude(snapshot)}
@@ -111,6 +115,7 @@ export async function generateWorkoutPlan(
   snapshot: FitnessSnapshot,
   weather: WeatherData,
   apiKey: string,
+  preferences: string[] = [],
 ): Promise<WorkoutPlan> {
   const client = new Anthropic({ apiKey });
 
@@ -136,7 +141,7 @@ export async function generateWorkoutPlan(
   const res = await client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1500,
-    system: buildSystemPrompt(snapshot, weather),
+    system: buildSystemPrompt(snapshot, weather, preferences),
     messages: [{
       role: 'user',
       content: `Today is ${today}. Based on Matt's recent training history and weekly targets, decide the best split and gym for today. Generate the workout plan as valid JSON only — no markdown, no explanation, just the JSON object matching this schema:\n${schema}\n\nFor leg days, set legDayViolations to a string describing any rule violations or null if clean. Return only valid JSON.`,
@@ -212,21 +217,27 @@ export async function parseIncomingMessage(
   history: ConversationMessage[],
   userMessage: string,
   apiKey: string,
+  preferences: string[] = [],
 ): Promise<ParsedMessage> {
   const client = new Anthropic({ apiKey });
 
-  const schema = `If it's a workout log (has exercise data, "done", "finished", duration, or knee status), return:
+  const schema = `Classify the message and return JSON only.
+
+If it's a workout log (has exercise data, "done", "finished", duration, or knee status):
 {"isLog":true,"logData":{"duration":70,"kneeFeel":"Pain-free","notes":"cable row 150×8 PR, felt strong","isPR":true},"reply":"Logged ✓ Cable row 150×8 — new PR. Notion updated."}
 
-Otherwise return:
+If it's a standing preference or rule Matt wants applied permanently ("I don't want X", "never do Y", "always include Z", "I prefer X over Y"):
+{"isLog":false,"newPreference":"Never use chest-supported row as a lead exercise","reply":"Got it — removing chest-supported row from lead rotation permanently."}
+
+Otherwise:
 {"isLog":false,"reply":"your response here"}
 
-Use Telegram Markdown in reply (*bold*, _italic_). Be concise. Return valid JSON only.`;
+Use Telegram Markdown in reply. Be concise. Return valid JSON only.`;
 
   const res = await client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 600,
-    system: `${buildSystemPrompt(snapshot, weather)}\n\n${schema}`,
+    system: `${buildSystemPrompt(snapshot, weather, preferences)}\n\n${schema}`,
     messages: [
       ...history.slice(-6),
       { role: 'user', content: userMessage },

@@ -8,6 +8,20 @@ import type { Env, FitnessSnapshot, ConversationMessage, TelegramUpdate } from '
 const LOCATION = 'San Diego, CA';
 const KV_SNAPSHOT = 'snapshot';
 const KV_CONV = 'conv';
+const KV_PREFS = 'preferences';
+
+async function getPreferences(env: Env): Promise<string[]> {
+  const raw = await env.FITNESS_KV.get(KV_PREFS);
+  return raw ? (JSON.parse(raw) as string[]) : [];
+}
+
+async function addPreference(env: Env, preference: string): Promise<void> {
+  const prefs = await getPreferences(env);
+  if (!prefs.includes(preference)) {
+    prefs.push(preference);
+    await env.FITNESS_KV.put(KV_PREFS, JSON.stringify(prefs));
+  }
+}
 
 async function getSnapshot(env: Env): Promise<FitnessSnapshot | null> {
   const raw = await env.FITNESS_KV.get(KV_SNAPSHOT);
@@ -52,7 +66,8 @@ async function sendDailyBriefing(env: Env): Promise<void> {
     chatId: snapshot.chatId,
   };
 
-  const plan = await generateWorkoutPlan(freshSnapshot, weather, env.ANTHROPIC_API_KEY);
+  const preferences = await getPreferences(env);
+  const plan = await generateWorkoutPlan(freshSnapshot, weather, env.ANTHROPIC_API_KEY, preferences);
 
   const todayISO = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' }); // YYYY-MM-DD
 
@@ -154,13 +169,14 @@ async function handleIncoming(env: Env, update: TelegramUpdate): Promise<void> {
 
   await sendTyping(token, chatId);
 
-  const [sessions, weather, history] = await Promise.all([
+  const [sessions, weather, history, preferences] = await Promise.all([
     // Only re-fetch Notion if snapshot is stale (>6 hours old)
     isSnapshotStale(snapshot)
       ? getRecentSessions(env.NOTION_API_KEY, env.NOTION_DATABASE_ID, 60)
       : Promise.resolve(null),
     getWeather(LOCATION),
     getHistory(env),
+    getPreferences(env),
   ]);
 
   let activeSnapshot = snapshot;
@@ -169,7 +185,11 @@ async function handleIncoming(env: Env, update: TelegramUpdate): Promise<void> {
     await saveSnapshot(env, activeSnapshot);
   }
 
-  const parsed = await parseIncomingMessage(activeSnapshot, weather, history, text, env.ANTHROPIC_API_KEY);
+  const parsed = await parseIncomingMessage(activeSnapshot, weather, history, text, env.ANTHROPIC_API_KEY, preferences);
+
+  if (parsed.newPreference) {
+    await addPreference(env, parsed.newPreference);
+  }
 
   if (parsed.isLog && parsed.logData) {
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
