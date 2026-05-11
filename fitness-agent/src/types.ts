@@ -12,7 +12,10 @@ export interface FitnessSnapshot {
   lastUpdated: string;
   todayPageId?: string;
   todayDate?: string;
-  lastSessions: Record<string, SessionSummary>;
+  // Last 2 sessions per split with full page content — for progressive overload + exercise rotation
+  recentByType: Record<string, SessionSummary[]>;
+  // All sessions last 14 days (date + split only) — for scheduling: what needs rest, what's overdue
+  allRecentDates: { date: string; split: string }[];
   kneeTrend: string[];   // last 5 knee feel readings: "2026-05-07 Pain-free"
   weekSessions: string[]; // splits completed since Monday
 }

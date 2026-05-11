@@ -95,7 +95,8 @@ async function handleCommand(env: Env, chatId: number, command: string): Promise
       const newSnapshot: FitnessSnapshot = {
         chatId,
         lastUpdated: new Date().toISOString(),
-        lastSessions: existing.lastSessions ?? {},
+        recentByType: existing.recentByType ?? {},
+        allRecentDates: existing.allRecentDates ?? [],
         kneeTrend: existing.kneeTrend ?? [],
         weekSessions: existing.weekSessions ?? [],
       };

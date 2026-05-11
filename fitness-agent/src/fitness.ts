@@ -1,4 +1,4 @@
-import type { NotionSession, FitnessSnapshot, WorkoutPlan, WeatherData } from './types';
+import type { NotionSession, FitnessSnapshot, SessionSummary, WorkoutPlan, WeatherData } from './types';
 import { weatherDriveNote } from './weather';
 
 function getMondayISO(date: Date): string {
@@ -13,63 +13,89 @@ export function buildSnapshot(
   existing: Partial<FitnessSnapshot> = {},
 ): Omit<FitnessSnapshot, 'chatId' | 'todayPageId' | 'todayDate'> {
   const monday = getMondayISO(new Date());
-  const lastSessions: FitnessSnapshot['lastSessions'] = {};
+  const recentByType: Record<string, SessionSummary[]> = {};
+  const allRecentDates: { date: string; split: string }[] = [];
   const kneeTrend: string[] = [];
   const weekSessions: string[] = [];
 
   for (const s of sessions) {
-    if (!lastSessions[s.split] && !['Rest/Recovery', 'Other'].includes(s.split)) {
-      lastSessions[s.split] = {
-        date: s.date,
-        gym: s.gym,
-        duration: s.duration,
-        notes: s.notes,
-        kneeFeel: s.kneeFeel,
-        isPR: s.isPR,
-        pageContent: s.pageContent,
-      };
+    allRecentDates.push({ date: s.date, split: s.split });
+
+    if (!['Rest/Recovery', 'Other'].includes(s.split)) {
+      if (!recentByType[s.split]) recentByType[s.split] = [];
+      // Keep last 2 per split (sessions are newest-first from Notion query)
+      if (recentByType[s.split].length < 2) {
+        recentByType[s.split].push({
+          date: s.date,
+          gym: s.gym,
+          duration: s.duration,
+          notes: s.notes,
+          kneeFeel: s.kneeFeel,
+          isPR: s.isPR,
+          pageContent: s.pageContent,
+        });
+      }
     }
+
     if (kneeTrend.length < 5 && s.kneeFeel && s.kneeFeel !== 'N/A') {
       kneeTrend.push(`${s.date} ${s.kneeFeel}`);
     }
+
     if (s.date >= monday && !['Rest/Recovery', 'Other'].includes(s.split)) {
       weekSessions.push(s.split);
     }
   }
 
-  return { lastUpdated: new Date().toISOString(), lastSessions, kneeTrend, weekSessions };
+  return { lastUpdated: new Date().toISOString(), recentByType, allRecentDates, kneeTrend, weekSessions };
 }
 
 export function formatSnapshotForClaude(snapshot: FitnessSnapshot): string {
-  const lines: string[] = ['RECENT SESSIONS (newest first):'];
+  const lines: string[] = [];
 
-  if (Object.keys(snapshot.lastSessions).length === 0) {
-    lines.push('No recent sessions found.');
+  // Full recent schedule — Claude uses this to decide what to train today
+  lines.push('## RECENT SCHEDULE (newest first)');
+  if (snapshot.allRecentDates.length === 0) {
+    lines.push('No sessions in the last 14 days.');
   } else {
-    for (const [split, s] of Object.entries(snapshot.lastSessions)) {
-      const pr = s.isPR ? ' ★PR' : '';
-      const dur = s.duration ? ` ${s.duration}min` : '';
-      const knee = s.kneeFeel !== 'N/A' ? ` knee:${s.kneeFeel}` : '';
-      lines.push(`${split} — ${s.date}${dur} @ ${s.gym}${knee}${pr}`);
-      if (s.pageContent) {
-        // Include the actual B1-B7 blocks so Claude knows exact weights used
-        lines.push(s.pageContent);
-      } else if (s.notes) {
-        lines.push(`Notes: ${s.notes}`);
-      }
-      lines.push('');
+    lines.push(snapshot.allRecentDates.map((d) => `${d.date}: ${d.split}`).join(' | '));
+  }
+  lines.push('');
+
+  // Last 2 sessions per split with full workout — for weights and exercise rotation
+  lines.push('## LAST 2 SESSIONS PER TYPE');
+  lines.push('(Use these for progressive overload targets and to rotate exercises)');
+  lines.push('');
+
+  if (Object.keys(snapshot.recentByType).length === 0) {
+    lines.push('No session history found.');
+  } else {
+    for (const [split, sessions] of Object.entries(snapshot.recentByType)) {
+      lines.push(`### ${split.toUpperCase()}`);
+      sessions.forEach((s, i) => {
+        const label = i === 0 ? 'Most recent' : 'Previous';
+        const pr = s.isPR ? ' ★PR' : '';
+        const dur = s.duration ? ` ${s.duration}min` : '';
+        const knee = s.kneeFeel !== 'N/A' ? ` knee:${s.kneeFeel}` : '';
+        lines.push(`${label}: ${s.date}${dur} @ ${s.gym}${knee}${pr}`);
+        if (s.pageContent) {
+          lines.push(s.pageContent);
+        } else if (s.notes) {
+          lines.push(`Notes: ${s.notes}`);
+        }
+        lines.push('');
+      });
     }
   }
 
+  // Weekly progress
   const gymCount = snapshot.weekSessions.filter((s) =>
     ['Chest', 'Back', 'Legs', 'Shoulders'].includes(s),
   ).length;
   const cardioCount = snapshot.weekSessions.filter((s) => s === 'Cycling').length;
-  lines.push(
-    `\nTHIS WEEK: ${snapshot.weekSessions.join(', ') || 'none yet'} — ${gymCount}/4 gym, ${cardioCount}/2 cardio`,
-  );
+  lines.push(`## THIS WEEK: ${snapshot.weekSessions.join(', ') || 'none yet'} — ${gymCount}/4 gym, ${cardioCount}/2 cardio`);
 
-  const kneeStr = snapshot.kneeTrend.length > 0 ? snapshot.kneeTrend.join(' | ') : 'no recent data';
+  // Knee trend
+  const kneeStr = snapshot.kneeTrend.length > 0 ? snapshot.kneeTrend.join(' | ') : 'no data';
   lines.push(`KNEE TREND: ${kneeStr}`);
 
   return lines.join('\n');
@@ -89,16 +115,13 @@ export function formatTelegramBriefing(
 
   const lines: string[] = [`*${today}*`, ''];
 
-  // Weather line
   const weatherIcon = getWeatherIcon(weather.description);
   lines.push(`${weatherIcon} ${weatherDriveNote(weather)}`);
   lines.push('');
 
-  // Gym recommendation
   lines.push(`📍 *${plan.gym}* — ${plan.gymReason}`);
   lines.push('');
 
-  // Workout
   lines.push(`*${plan.sessionTitle}*`);
 
   if (plan.isRestDay) {

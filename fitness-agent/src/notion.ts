@@ -70,15 +70,18 @@ export async function getRecentSessions(
   const data = await res.json() as { results?: any[] };
   const sessions = (data.results ?? []).map(parseSession);
 
-  // Fetch page body content for the most recent session of each split.
-  // Results are already sorted newest-first, so the first occurrence of each
-  // split is the most recent one — those are the weights Claude needs.
-  const seenSplits = new Set<string>();
+  // Fetch page body content for the last 2 sessions of each split.
+  // Results are sorted newest-first. We need 2 per split so Claude can:
+  // 1. See exact weights used last session (progressive overload)
+  // 2. See which exercises were chosen last time (rotation — don't repeat same B1)
+  const splitCounts = new Map<string, number>();
   const contentFetches: Promise<void>[] = [];
 
   for (const session of sessions) {
-    if (!seenSplits.has(session.split) && !['Rest/Recovery', 'Other'].includes(session.split)) {
-      seenSplits.add(session.split);
+    if (['Rest/Recovery', 'Other'].includes(session.split)) continue;
+    const count = splitCounts.get(session.split) ?? 0;
+    if (count < 2) {
+      splitCounts.set(session.split, count + 1);
       contentFetches.push(
         getPageContent(apiKey, session.id).then((content) => {
           session.pageContent = content;
