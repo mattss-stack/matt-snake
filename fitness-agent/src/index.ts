@@ -40,7 +40,9 @@ async function sendDailyBriefing(env: Env): Promise<void> {
   if (!snapshot?.chatId) return; // no registered user yet
 
   const [sessions, weather] = await Promise.all([
-    getRecentSessions(env.NOTION_API_KEY, env.NOTION_DATABASE_ID, 14),
+    // 60 days for scheduling: Claude needs to see far enough back to track reset weeks
+    // Page content is still only fetched for the 2 most recent sessions per split
+    getRecentSessions(env.NOTION_API_KEY, env.NOTION_DATABASE_ID, 60),
     getWeather(LOCATION),
   ]);
 
@@ -146,7 +148,7 @@ async function handleIncoming(env: Env, update: TelegramUpdate): Promise<void> {
   const [sessions, weather, history] = await Promise.all([
     // Only re-fetch Notion if snapshot is stale (>6 hours old)
     isSnapshotStale(snapshot)
-      ? getRecentSessions(env.NOTION_API_KEY, env.NOTION_DATABASE_ID, 14)
+      ? getRecentSessions(env.NOTION_API_KEY, env.NOTION_DATABASE_ID, 60)
       : Promise.resolve(null),
     getWeather(LOCATION),
     getHistory(env),
