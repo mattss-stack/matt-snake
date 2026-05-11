@@ -163,6 +163,49 @@ export async function generateWorkoutPlan(
   }
 }
 
+export async function generateWeeklySummary(
+  snapshot: FitnessSnapshot,
+  apiKey: string,
+): Promise<string> {
+  const client = new Anthropic({ apiKey });
+
+  const weekDates = getWeekDateRange();
+
+  const res = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 600,
+    system: buildSystemPrompt(snapshot, {
+      temp: 'unavailable', feelsLike: 'unavailable',
+      description: 'unavailable', windSpeed: 'unavailable', goodForOutdoor: false,
+    }),
+    messages: [{
+      role: 'user',
+      content: `Generate a weekly coaching review for ${weekDates}.
+
+Format in Telegram Markdown. Keep it under 200 words. Cover:
+1. What was actually done this week (sessions, any PRs)
+2. What splits are most overdue going into the next 7 days
+3. Reset week status — estimate weeks since last deload from allRecentDates, flag if one is due
+4. One coaching note worth keeping in mind for the week ahead
+
+Critical: this is NOT a schedule. Matt decides day-of based on energy. Do not assign days to sessions. Do not say "Monday do X". Just give him the context to make good decisions all week.`,
+    }],
+  });
+
+  return res.content[0].type === 'text' ? res.content[0].text.trim() : '';
+}
+
+function getWeekDateRange(): string {
+  const now = new Date();
+  const day = now.getDay();
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - (day === 0 ? 6 : day - 1));
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Los_Angeles' });
+  return `${fmt(monday)} – ${fmt(sunday)}`;
+}
+
 export async function parseIncomingMessage(
   snapshot: FitnessSnapshot,
   weather: WeatherData,

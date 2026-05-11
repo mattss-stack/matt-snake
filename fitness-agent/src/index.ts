@@ -1,7 +1,7 @@
 import { sendMessage, sendTyping, setWebhook } from './telegram';
 import { getWeather } from './weather';
 import { buildSnapshot, formatTelegramBriefing } from './fitness';
-import { generateWorkoutPlan, parseIncomingMessage } from './claude';
+import { generateWorkoutPlan, generateWeeklySummary, parseIncomingMessage } from './claude';
 import { getRecentSessions, createWorkoutPage, updateWorkoutPage, notionPageUrl } from './notion';
 import type { Env, FitnessSnapshot, ConversationMessage, TelegramUpdate } from './types';
 
@@ -81,6 +81,15 @@ async function sendDailyBriefing(env: Env): Promise<void> {
   const notionUrl = pageId ? notionPageUrl(pageId) : 'https://notion.so';
   const message = formatTelegramBriefing(plan, weather, notionUrl);
   await sendMessage(env.TELEGRAM_BOT_TOKEN, snapshot.chatId, message);
+
+  // Sunday: send weekly coaching review as a second message after the daily briefing
+  const isSunday = new Date().getDay() === 0;
+  if (isSunday) {
+    const summary = await generateWeeklySummary(freshSnapshot, env.ANTHROPIC_API_KEY);
+    if (summary) {
+      await sendMessage(env.TELEGRAM_BOT_TOKEN, snapshot.chatId, summary);
+    }
+  }
 }
 
 async function handleCommand(env: Env, chatId: number, command: string): Promise<void> {
