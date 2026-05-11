@@ -31,6 +31,24 @@ function parseSession(page: any): NotionSession {
   };
 }
 
+async function getPageContent(apiKey: string, pageId: string): Promise<string> {
+  try {
+    const res = await fetch(`${BASE}/blocks/${pageId}/children?page_size=50`, {
+      headers: headers(apiKey),
+    });
+    const data = await res.json() as { results?: any[] };
+    return (data.results ?? [])
+      .filter((b: any) => b.type === 'paragraph')
+      .map((b: any) =>
+        (b.paragraph?.rich_text ?? []).map((r: any) => r.text?.content ?? '').join(''),
+      )
+      .filter((line: string) => line.trim().length > 0)
+      .join('\n');
+  } catch {
+    return '';
+  }
+}
+
 export async function getRecentSessions(
   apiKey: string,
   databaseId: string,
@@ -50,7 +68,27 @@ export async function getRecentSessions(
   });
 
   const data = await res.json() as { results?: any[] };
-  return (data.results ?? []).map(parseSession);
+  const sessions = (data.results ?? []).map(parseSession);
+
+  // Fetch page body content for the most recent session of each split.
+  // Results are already sorted newest-first, so the first occurrence of each
+  // split is the most recent one — those are the weights Claude needs.
+  const seenSplits = new Set<string>();
+  const contentFetches: Promise<void>[] = [];
+
+  for (const session of sessions) {
+    if (!seenSplits.has(session.split) && !['Rest/Recovery', 'Other'].includes(session.split)) {
+      seenSplits.add(session.split);
+      contentFetches.push(
+        getPageContent(apiKey, session.id).then((content) => {
+          session.pageContent = content;
+        }),
+      );
+    }
+  }
+
+  await Promise.all(contentFetches);
+  return sessions;
 }
 
 export async function createWorkoutPage(

@@ -26,6 +26,7 @@ export function buildSnapshot(
         notes: s.notes,
         kneeFeel: s.kneeFeel,
         isPR: s.isPR,
+        pageContent: s.pageContent,
       };
     }
     if (kneeTrend.length < 5 && s.kneeFeel && s.kneeFeel !== 'N/A') {
@@ -49,7 +50,14 @@ export function formatSnapshotForClaude(snapshot: FitnessSnapshot): string {
       const pr = s.isPR ? ' ★PR' : '';
       const dur = s.duration ? ` ${s.duration}min` : '';
       const knee = s.kneeFeel !== 'N/A' ? ` knee:${s.kneeFeel}` : '';
-      lines.push(`${split} — ${s.date}${dur} @ ${s.gym}${knee}${pr}: ${s.notes || 'no notes'}`);
+      lines.push(`${split} — ${s.date}${dur} @ ${s.gym}${knee}${pr}`);
+      if (s.pageContent) {
+        // Include the actual B1-B7 blocks so Claude knows exact weights used
+        lines.push(s.pageContent);
+      } else if (s.notes) {
+        lines.push(`Notes: ${s.notes}`);
+      }
+      lines.push('');
     }
   }
 

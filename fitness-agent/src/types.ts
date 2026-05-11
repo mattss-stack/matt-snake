@@ -24,6 +24,7 @@ export interface SessionSummary {
   notes: string;
   kneeFeel: string;
   isPR: boolean;
+  pageContent?: string;
 }
 
 export interface NotionSession {
@@ -37,6 +38,7 @@ export interface NotionSession {
   notes: string;
   session: string;
   isPR: boolean;
+  pageContent?: string; // B1-B7 workout lines from the page body
 }
 
 export interface WorkoutBlock {
