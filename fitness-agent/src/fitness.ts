@@ -15,12 +15,12 @@ export function buildSnapshot(
 ): Omit<FitnessSnapshot, 'chatId' | 'todayPageId' | 'todayDate'> {
   const monday = getMondayISO(new Date());
   const recentByType: Record<string, SessionSummary[]> = {};
-  const allRecentDates: { date: string; split: string }[] = [];
+  const allRecentDates: { date: string; split: string; isPR: boolean }[] = [];
   const kneeTrend: string[] = [];
   const weekSessions: string[] = [];
 
   for (const s of sessions) {
-    allRecentDates.push({ date: s.date, split: s.split });
+    allRecentDates.push({ date: s.date, split: s.split, isPR: s.isPR });
 
     if (!['Rest/Recovery', 'Other'].includes(s.split)) {
       if (!recentByType[s.split]) recentByType[s.split] = [];
@@ -96,15 +96,9 @@ function computeDensityAudit(snapshot: FitnessSnapshot): string {
     }
   }
 
-  // PRs this week
+  // PRs this week — uses full allRecentDates so not capped at 2 per split
   const monday = getMondayISO(new Date());
-  const prSessions = snapshot.allRecentDates.filter(
-    (s) => s.date >= monday,
-  );
-  // We don't track PR flag per date in allRecentDates — flag from recentByType where available
-  const prCount = Object.values(snapshot.recentByType)
-    .flat()
-    .filter((s) => s.isPR && s.date >= monday).length;
+  const prCount = snapshot.allRecentDates.filter((s) => s.date >= monday && s.isPR).length;
 
   const restFlag = restRatio < 15 ? ' — low, consider whether fatigue is accumulating' : '';
   const streakFlag = streak >= 5 ? ` — ${streak} straight, worth noting in your recommendation` : '';

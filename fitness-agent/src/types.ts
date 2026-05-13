@@ -18,8 +18,8 @@ export interface FitnessSnapshot {
   todayDate?: string;
   // Last 2 sessions per split with full page content — for progressive overload + exercise rotation
   recentByType: Record<string, SessionSummary[]>;
-  // All sessions last 60 days (date + split only) — for scheduling: what needs rest, what's overdue
-  allRecentDates: { date: string; split: string }[];
+  // All sessions last 60 days — for scheduling, density, and PR tracking across the full window
+  allRecentDates: { date: string; split: string; isPR: boolean }[];
   kneeTrend: string[];   // last 5 knee feel readings: "2026-05-07 Pain-free"
   weekSessions: string[]; // splits completed since Monday
   // Confirmed rest days from Google Calendar (YYYY-MM-DD) — fills the gap Notion can't see
