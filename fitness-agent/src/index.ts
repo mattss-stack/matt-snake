@@ -3,6 +3,7 @@ import { getWeather } from './weather';
 import { buildSnapshot, formatTelegramBriefing } from './fitness';
 import { generateWorkoutPlan, generateWeeklySummary, parseIncomingMessage } from './claude';
 import { getRecentSessions, createWorkoutPage, updateWorkoutPage, notionPageUrl } from './notion';
+import { getCalendarEvents, extractRestDays } from './calendar';
 import type { Env, FitnessSnapshot, ConversationMessage, TelegramUpdate } from './types';
 
 const LOCATION = 'San Diego, CA';
@@ -49,20 +50,34 @@ async function appendHistory(
   await env.FITNESS_KV.put(KV_CONV, JSON.stringify(history.slice(-20)));
 }
 
+async function fetchRestDays(env: Env): Promise<string[]> {
+  if (!env.GOOGLE_CLIENT_EMAIL || !env.GOOGLE_PRIVATE_KEY || !env.GOOGLE_CALENDAR_ID) {
+    return [];
+  }
+  const events = await getCalendarEvents(
+    env.GOOGLE_CLIENT_EMAIL,
+    env.GOOGLE_PRIVATE_KEY,
+    env.GOOGLE_CALENDAR_ID,
+    60,
+  );
+  return extractRestDays(events);
+}
+
 async function sendDailyBriefing(env: Env): Promise<void> {
   const snapshot = await getSnapshot(env);
   if (!snapshot?.chatId) return; // no registered user yet
 
-  const [sessions, weather] = await Promise.all([
+  const [sessions, weather, restDays] = await Promise.all([
     // 60 days for scheduling: Claude needs to see far enough back to track reset weeks
     // Page content is still only fetched for the 2 most recent sessions per split
     getRecentSessions(env.NOTION_API_KEY, env.NOTION_DATABASE_ID, 60),
     getWeather(LOCATION),
+    fetchRestDays(env),
   ]);
 
   const freshSnapshot: FitnessSnapshot = {
     ...snapshot,
-    ...buildSnapshot(sessions, snapshot),
+    ...buildSnapshot(sessions, snapshot, restDays),
     chatId: snapshot.chatId,
   };
 
@@ -125,6 +140,7 @@ async function handleCommand(env: Env, chatId: number, command: string): Promise
         allRecentDates: existing.allRecentDates ?? [],
         kneeTrend: existing.kneeTrend ?? [],
         weekSessions: existing.weekSessions ?? [],
+        confirmedRestDays: existing.confirmedRestDays ?? [],
       };
       await saveSnapshot(env, newSnapshot);
       await sendMessage(token, chatId,
@@ -169,7 +185,7 @@ async function handleIncoming(env: Env, update: TelegramUpdate): Promise<void> {
 
   await sendTyping(token, chatId);
 
-  const [sessions, weather, history, preferences] = await Promise.all([
+  const [sessions, weather, history, preferences, restDays] = await Promise.all([
     // Only re-fetch Notion if snapshot is stale (>6 hours old)
     isSnapshotStale(snapshot)
       ? getRecentSessions(env.NOTION_API_KEY, env.NOTION_DATABASE_ID, 60)
@@ -177,11 +193,16 @@ async function handleIncoming(env: Env, update: TelegramUpdate): Promise<void> {
     getWeather(LOCATION),
     getHistory(env),
     getPreferences(env),
+    isSnapshotStale(snapshot) ? fetchRestDays(env) : Promise.resolve(snapshot.confirmedRestDays ?? []),
   ]);
 
   let activeSnapshot = snapshot;
   if (sessions) {
-    activeSnapshot = { ...snapshot, ...buildSnapshot(sessions, snapshot), chatId: snapshot.chatId };
+    activeSnapshot = {
+      ...snapshot,
+      ...buildSnapshot(sessions, snapshot, restDays),
+      chatId: snapshot.chatId,
+    };
     await saveSnapshot(env, activeSnapshot);
   }
 
@@ -203,7 +224,11 @@ async function handleIncoming(env: Env, update: TelegramUpdate): Promise<void> {
     // Refresh snapshot from Notion after log so next message has updated data
     try {
       const refreshed = await getRecentSessions(env.NOTION_API_KEY, env.NOTION_DATABASE_ID, 14);
-      const updated = { ...activeSnapshot, ...buildSnapshot(refreshed, activeSnapshot), chatId: activeSnapshot.chatId };
+      const updated = {
+        ...activeSnapshot,
+        ...buildSnapshot(refreshed, activeSnapshot, activeSnapshot.confirmedRestDays ?? []),
+        chatId: activeSnapshot.chatId,
+      };
       await saveSnapshot(env, updated);
     } catch {
       // Non-critical

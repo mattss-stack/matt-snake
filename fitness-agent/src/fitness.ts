@@ -11,6 +11,7 @@ function getMondayISO(date: Date): string {
 export function buildSnapshot(
   sessions: NotionSession[],
   existing: Partial<FitnessSnapshot> = {},
+  confirmedRestDays: string[] = [],
 ): Omit<FitnessSnapshot, 'chatId' | 'todayPageId' | 'todayDate'> {
   const monday = getMondayISO(new Date());
   const recentByType: Record<string, SessionSummary[]> = {};
@@ -46,18 +47,116 @@ export function buildSnapshot(
     }
   }
 
-  return { lastUpdated: new Date().toISOString(), recentByType, allRecentDates, kneeTrend, weekSessions };
+  return {
+    lastUpdated: new Date().toISOString(),
+    recentByType,
+    allRecentDates,
+    kneeTrend,
+    weekSessions,
+    confirmedRestDays,
+  };
+}
+
+function computeDensityAudit(snapshot: FitnessSnapshot): string {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  const windowDays = 14;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - windowDays);
+  const cutoffISO = cutoff.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+
+  // Training days in the 14-day window (exclude rest/recovery/other logged in Notion)
+  const trainingDatesInWindow = snapshot.allRecentDates
+    .filter((d) => d.date >= cutoffISO && d.date <= today)
+    .filter((d) => !['Rest/Recovery', 'Other'].includes(d.split))
+    .map((d) => d.date);
+  const trainingDays = new Set(trainingDatesInWindow).size;
+
+  // Confirmed rest days from calendar within window
+  const confirmedRest = (snapshot.confirmedRestDays ?? []).filter(
+    (d) => d >= cutoffISO && d <= today,
+  );
+
+  // Days accounted for = training + confirmed rest. Everything else is unlogged.
+  const accountedDates = new Set([...trainingDatesInWindow, ...confirmedRest]);
+  const unloggedDays = windowDays - accountedDates.size;
+
+  const restRatio = Math.round(((confirmedRest.length + unloggedDays) / windowDays) * 100);
+
+  // Consecutive training streak (count backwards from today)
+  const trainingDateSet = new Set(trainingDatesInWindow);
+  let streak = 0;
+  const d = new Date();
+  for (let i = 0; i < 14; i++) {
+    const iso = d.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+    if (trainingDateSet.has(iso)) {
+      streak++;
+      d.setDate(d.getDate() - 1);
+    } else {
+      break;
+    }
+  }
+
+  // PRs this week
+  const monday = getMondayISO(new Date());
+  const prSessions = snapshot.allRecentDates.filter(
+    (s) => s.date >= monday,
+  );
+  // We don't track PR flag per date in allRecentDates — flag from recentByType where available
+  const prCount = Object.values(snapshot.recentByType)
+    .flat()
+    .filter((s) => s.isPR && s.date >= monday).length;
+
+  const restStatus = restRatio >= 20
+    ? `${restRatio}% ✓`
+    : `${restRatio}% ⚠️ BELOW 20% FLOOR — recommend rest before next session`;
+
+  const streakStatus = streak >= 3
+    ? `${streak} days ⚠️ flag for rest if ${streak === 3 ? '4th' : 'another'} session today`
+    : `${streak} days ✓`;
+
+  const calendarNote = (snapshot.confirmedRestDays ?? []).length === 0
+    ? ' (calendar not connected — unlogged days assumed rest)'
+    : ` (${confirmedRest.length} confirmed from calendar, ${unloggedDays} unlogged)`;
+
+  return [
+    '## PRE-FLIGHT AUDIT — EVALUATE THIS BEFORE ANY RECOMMENDATION',
+    `Window: last ${windowDays} days`,
+    `Training days: ${trainingDays} | Rest/unlogged: ${confirmedRest.length + unloggedDays}${calendarNote}`,
+    `Rest ratio: ${restStatus}`,
+    `Consecutive training streak: ${streakStatus}`,
+    `PRs this week: ${prCount} (limit: 2 per 7 days)`,
+    '',
+    'RULE: If rest ratio < 20% OR streak ≥ 4 OR PRs ≥ 2 this week → output REST with reasoning.',
+    'Do not wait to be asked. State the data and hold the position.',
+    '',
+  ].join('\n');
 }
 
 export function formatSnapshotForClaude(snapshot: FitnessSnapshot): string {
   const lines: string[] = [];
 
+  // Pre-flight density audit — always first so it can't be skipped
+  lines.push(computeDensityAudit(snapshot));
+
   // Full recent schedule — Claude uses this to decide what to train today
   lines.push('## RECENT SCHEDULE (newest first)');
   if (snapshot.allRecentDates.length === 0) {
-    lines.push('No sessions in the last 14 days.');
+    lines.push('No sessions in the last 60 days.');
   } else {
-    lines.push(snapshot.allRecentDates.map((d) => `${d.date}: ${d.split}`).join(' | '));
+    // Show Notion sessions + confirmed rest days merged and sorted newest-first
+    const allEvents: { date: string; label: string }[] = [
+      ...snapshot.allRecentDates.map((d) => ({ date: d.date, label: d.split })),
+      ...(snapshot.confirmedRestDays ?? []).map((d) => ({ date: d, label: 'Rest (calendar)' })),
+    ];
+    allEvents.sort((a, b) => b.date.localeCompare(a.date));
+    // Deduplicate by date (Notion session wins over calendar rest if both exist)
+    const seen = new Set<string>();
+    const deduped = allEvents.filter((e) => {
+      if (seen.has(e.date)) return false;
+      seen.add(e.date);
+      return true;
+    });
+    lines.push(deduped.map((d) => `${d.date}: ${d.label}`).join(' | '));
   }
   lines.push('');
 

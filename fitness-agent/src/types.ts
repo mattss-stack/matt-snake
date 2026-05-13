@@ -5,6 +5,10 @@ export interface Env {
   TELEGRAM_WEBHOOK_SECRET: string;
   NOTION_API_KEY: string;
   NOTION_DATABASE_ID: string;
+  // Optional — Google Calendar integration for rest day visibility
+  GOOGLE_CLIENT_EMAIL?: string;
+  GOOGLE_PRIVATE_KEY?: string;
+  GOOGLE_CALENDAR_ID?: string;
 }
 
 export interface FitnessSnapshot {
@@ -14,10 +18,17 @@ export interface FitnessSnapshot {
   todayDate?: string;
   // Last 2 sessions per split with full page content — for progressive overload + exercise rotation
   recentByType: Record<string, SessionSummary[]>;
-  // All sessions last 14 days (date + split only) — for scheduling: what needs rest, what's overdue
+  // All sessions last 60 days (date + split only) — for scheduling: what needs rest, what's overdue
   allRecentDates: { date: string; split: string }[];
   kneeTrend: string[];   // last 5 knee feel readings: "2026-05-07 Pain-free"
   weekSessions: string[]; // splits completed since Monday
+  // Confirmed rest days from Google Calendar (YYYY-MM-DD) — fills the gap Notion can't see
+  confirmedRestDays: string[];
+}
+
+export interface CalendarEvent {
+  date: string;    // YYYY-MM-DD
+  summary: string;
 }
 
 export interface SessionSummary {
