@@ -106,28 +106,23 @@ function computeDensityAudit(snapshot: FitnessSnapshot): string {
     .flat()
     .filter((s) => s.isPR && s.date >= monday).length;
 
-  const restStatus = restRatio >= 20
-    ? `${restRatio}% ✓`
-    : `${restRatio}% ⚠️ BELOW 20% FLOOR — recommend rest before next session`;
-
-  const streakStatus = streak >= 3
-    ? `${streak} days ⚠️ flag for rest if ${streak === 3 ? '4th' : 'another'} session today`
-    : `${streak} days ✓`;
+  const restFlag = restRatio < 15 ? ' — low, consider whether fatigue is accumulating' : '';
+  const streakFlag = streak >= 5 ? ` — ${streak} straight, worth noting in your recommendation` : '';
+  const prFlag = prCount >= 2 ? ' — at weekly limit, skip PR attempts today' : '';
 
   const calendarNote = (snapshot.confirmedRestDays ?? []).length === 0
     ? ' (calendar not connected — unlogged days assumed rest)'
     : ` (${confirmedRest.length} confirmed from calendar, ${unloggedDays} unlogged)`;
 
   return [
-    '## PRE-FLIGHT AUDIT — EVALUATE THIS BEFORE ANY RECOMMENDATION',
-    `Window: last ${windowDays} days`,
-    `Training days: ${trainingDays} | Rest/unlogged: ${confirmedRest.length + unloggedDays}${calendarNote}`,
-    `Rest ratio: ${restStatus}`,
-    `Consecutive training streak: ${streakStatus}`,
-    `PRs this week: ${prCount} (limit: 2 per 7 days)`,
+    '## LOAD CONTEXT — read before recommending',
+    `Last ${windowDays} days: ${trainingDays} training days | ${confirmedRest.length + unloggedDays} rest/unlogged${calendarNote}`,
+    `Rest ratio: ${restRatio}%${restFlag}`,
+    `Consecutive training streak: ${streak} days${streakFlag}`,
+    `PRs this week: ${prCount}${prFlag}`,
     '',
-    'RULE: If rest ratio < 20% OR streak ≥ 4 OR PRs ≥ 2 this week → output REST with reasoning.',
-    'Do not wait to be asked. State the data and hold the position.',
+    'Use this as context, not a rulebook. A 4- or 5-day training block is normal.',
+    'Flag fatigue only if session notes, intensity drops, or illness support it — not headcount alone.',
     '',
   ].join('\n');
 }
